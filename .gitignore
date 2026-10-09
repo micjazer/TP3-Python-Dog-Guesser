@@ -1,0 +1,15 @@
+# Environnements virtuels Python.
+.venv/
+venv/
+# Fichiers intermédiaires Python.
+__pycache__/
+*.py[cod]
+# Données créées automatiquement pendant les parties.
+records.json
+records.tmp
+scores_dog_guesser.csv
+chien_mystere.jpg
+# Configuration locale et secrets éventuels.
+.env
+.idea/
+.vscode/

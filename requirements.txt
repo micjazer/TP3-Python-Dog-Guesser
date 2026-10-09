@@ -1,0 +1,6 @@
+requests # Requêtes HTTP vers Dog CEO et le serveur des records.
+Pillow # Traitement des images et affichage avec Tkinter.
+fastapi # API HTTP et canal WebSocket du serveur.
+pydantic # Validation des noms et des scores reçus.
+uvicorn # Exécution du serveur FastAPI.
+websockets # Connexion WebSocket du jeu et prise en charge côté serveur.
