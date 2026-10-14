@@ -29,7 +29,7 @@ Dans un second terminal, ouvert dans le même dossier :
 .\.venv\Scripts\python.exe .\dog_guesser.py # Lance une question du jeu pour Michel Jazeron.
 ```
 
-Cliquer sur une race. Fermer puis relancer le jeu pour une nouvelle question. Arrêter le serveur avec Ctrl+C. Après une interruption du canal WebSocket, relancer le jeu pour se reconnecter. Utiliser un seul processus serveur, sans option multi-processus.
+Cliquer sur une race, puis sur « Rejouer » pour une nouvelle question. La fenêtre est redimensionnable ; une barre de défilement garde le contenu accessible sur les petits écrans. Le barème et les états de chargement sont affichés. Arrêter le serveur avec Ctrl+C. Après une interruption du canal WebSocket, relancer le jeu pour se reconnecter. Utiliser un seul processus serveur, sans option multi-processus.
 
 Pour les exercices de prise en main :
 

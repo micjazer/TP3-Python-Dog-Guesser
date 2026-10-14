@@ -106,113 +106,195 @@ def ecouter_records(messages: Queue) -> None:  # Reçoit les records du serveur 
     finally:  # Signale aussi une fermeture normale de la connexion.
         messages.put({"erreur": "Connexion aux records interrompue : relance le jeu."})  # Informe l’interface que les données ne sont plus actualisées.
 
-def afficher_question(bonne_race: str, propositions: list[str]) -> None:  # Affiche la question et gère la réponse du joueur.
-    fenetre = tk.Tk()  # Crée la fenêtre principale du jeu.
-    fenetre.title("Dog Guesser — Michel Jazeron")  # Définit le titre de la fenêtre.
-    fenetre.resizable(False, False)  # Empêche le redimensionnement manuel de la fenêtre.
+class Jeu:  # Regroupe l’interface et l’état de la question en cours.
+    def __init__(self) -> None:  # Prépare une seule fenêtre réutilisée pour toutes les questions.
+        self.fenetre = tk.Tk()  # Crée la fenêtre dans le fil principal.
+        self.fenetre.title("Dog Guesser — Michel Jazeron")  # Nomme la fenêtre.
+        self.fenetre.protocol("WM_DELETE_WINDOW", self.fermer)  # Termine une sauvegarde commencée avant de fermer.
+        largeur = min(720, self.fenetre.winfo_screenwidth() - 80)  # Adapte la largeur à l’écran.
+        hauteur = min(850, self.fenetre.winfo_screenheight() - 100)  # Réserve de la place aux bordures et à la barre des tâches.
+        self.fenetre.geometry(f"{largeur}x{hauteur}+20+20")  # Positionne une fenêtre redimensionnable dans l’écran.
+        self.messages = Queue()  # Reçoit les résultats des opérations HTTP.
+        self.records = Queue()  # Reçoit les notifications WebSocket.
+        self.phase = "repos"  # Distingue chargement, question, sauvegarde et repos.
+        self.record = None  # Distingue un record inconnu d’un record égal à zéro.
+        self.photo_source = None  # Conserve l’image originale pour les redimensionnements.
+        self.bonne_race = ""  # Initialise la réponse attendue.
+        self.numero = 0  # Compte les questions effectivement affichées.
+        self.debut = 0.0  # Initialise le chronomètre.
+        self.surface = tk.Canvas(self.fenetre, highlightthickness=0, bg="#f3f6fa")  # Crée une zone de contenu défilante.
+        barre = tk.Scrollbar(self.fenetre, orient="vertical", command=self.surface.yview)  # Permet de parcourir une fenêtre trop petite.
+        barre.pack(side="right", fill="y")  # Place la barre sur le bord droit.
+        self.surface.pack(side="left", fill="both", expand=True)  # Adapte la zone à la fenêtre.
+        self.surface.config(yscrollcommand=barre.set)  # Synchronise la position de la barre.
+        self.contenu = tk.Frame(self.surface, bg="#f3f6fa", padx=12, pady=12)  # Regroupe les éléments du jeu.
+        self.element = self.surface.create_window(0, 0, window=self.contenu, anchor="nw")  # Insère le contenu dans la zone défilante.
+        self.contenu.bind("<Configure>", lambda evenement: self.surface.config(scrollregion=self.surface.bbox("all")))  # Actualise la hauteur défilable.
+        self.textes = []  # Conserve les textes dont la largeur doit s’adapter.
+        self.titre = self.texte("Dog Guesser", 19, "#16324f")  # Affiche le nom du jeu.
+        self.texte("Michel, retrouve la race principale de ce chien.", 12)  # Affiche la consigne.
+        self.personnel = self.texte("Record personnel : chargement…", 11, "#16324f")  # Prépare le record individuel.
+        self.global_ = self.texte("Record de tous les temps : connexion…", 11, "#643a87")  # Prépare le record global.
+        self.image = tk.Label(self.contenu, bg="#f3f6fa")  # Prépare la photographie.
+        self.image.pack(pady=8)  # Centre la photographie.
+        self.etat = self.texte("", 11, "#16324f")  # Indique la progression ou les erreurs.
+        self.texte("Bonne réponse : ≤ 5 s = 150 pts ; ≤ 10 s = 125 pts ; sinon 100 pts.\nMauvaise réponse : 0 point. Noms des races en anglais, comme dans l’API.", 10)  # Explique le barème avant de jouer.
+        cadre = tk.Frame(self.contenu, bg="#f3f6fa")  # Regroupe les choix en deux colonnes.
+        cadre.pack(fill="x", pady=8)  # Utilise toute la largeur disponible.
+        cadre.columnconfigure((0, 1), weight=1, uniform="choix")  # Donne la même largeur aux deux colonnes.
+        self.boutons = []  # Conserve les quatre boutons.
+        for position in range(4):  # Crée les boutons une seule fois.
+            bouton = tk.Button(cadre, text="…", font=("Arial", 11), state="disabled", pady=7)  # Prépare un bouton de réponse.
+            bouton.grid(row=position // 2, column=position % 2, sticky="ew", padx=4, pady=4)  # Organise les choix en grille.
+            self.boutons.append(bouton)  # Mémorise le bouton.
+        self.resultat = self.texte("", 11)  # Affiche la correction et les confirmations de sauvegarde.
+        self.rejouer = tk.Button(self.contenu, text="Rejouer", command=self.charger, font=("Arial", 11), pady=6)  # Propose une nouvelle question sans relancer Python.
+        self.rejouer.pack(fill="x", pady=6)  # Place le bouton sous le résultat.
+        self.texte("Michel Jazeron — michel.jazeron@gmail.com", 9, "#596579")  # Affiche la signature.
+        self.surface.bind("<Configure>", self.adapter)  # Adapte textes et photographie au redimensionnement.
+        self.fenetre.bind("<MouseWheel>", self.defiler)  # Active la molette sous Windows.
+        self.fenetre.bind("<Button-4>", lambda evenement: self.surface.yview_scroll(-1, "units"))  # Active le défilement vers le haut sous Linux.
+        self.fenetre.bind("<Button-5>", lambda evenement: self.surface.yview_scroll(1, "units"))  # Active le défilement vers le bas sous Linux.
+        Thread(target=ecouter_records, args=(self.records,), daemon=True).start()  # Ouvre une seule connexion WebSocket pour toute la session.
+        self.fenetre.after(50, self.traiter)  # Programme le traitement des messages dans le fil graphique.
+        self.charger()  # Charge la première question en arrière-plan.
 
-    titre = tk.Label(fenetre, text="Michel, quelle est la race principale de ce chien ?", font=("Arial", 14))  # Crée le texte de la question.
-    titre.pack(padx=20, pady=10)  # Affiche la question avec des marges.
-    record_joueur = lire_record("Michel Jazeron")  # Charge le meilleur score de Michel avant de commencer la question.
-    zone_record = tk.Label(fenetre, text=f"Record de Michel Jazeron : {record_joueur} points", font=("Arial", 12), fg="navy")  # Crée le texte du record en bleu foncé.
-    zone_record.pack(pady=5)  # Affiche le record sous le titre.
-    zone_global = tk.Label(fenetre, text="Record de tous les temps : connexion…", font=("Arial", 12), fg="purple", wraplength=580)  # Prépare l’affichage du record global.
-    zone_global.pack(pady=5)  # Affiche le record global sous le record personnel.
-    messages_records = Queue()  # Crée la file reliant la réception réseau à l’interface.
+    def fermer(self) -> None:  # Évite de couper une écriture en cours.
+        if self.phase == "sauvegarde":  # Vérifie si le résultat est encore en cours d’enregistrement.
+            self.etat.config(text="Sauvegarde en cours : attends sa fin, puis ferme la fenêtre.")  # Explique pourquoi la fermeture est différée.
+            return  # Laisse se terminer les opérations bornées par leurs délais réseau.
+        self.fenetre.destroy()  # Ferme normalement dans les autres états.
 
-    def actualiser_record_global() -> None:  # Traite les notifications dans le fil principal de Tkinter.
-        try:  # Consulte les messages déjà reçus sans attendre le réseau.
-            while True:  # Traite tous les messages disponibles.
-                donnees = messages_records.get_nowait()  # Retire le prochain message sans bloquer la fenêtre.
-                if "erreur" in donnees:  # Vérifie si la connexion a été interrompue.
-                    zone_global.config(text=donnees["erreur"], fg="firebrick")  # Signale que l’actualisation n’est plus disponible.
-                else:  # Traite un record envoyé par le serveur.
-                    noms = ", ".join(donnees["joueurs"]) or "Aucun joueur"  # Prépare la liste des détenteurs du record.
-                    texte = f"Record de tous les temps : {donnees['record']} points\nDétenu par : {noms}"  # Prépare le texte à afficher.
-                    zone_global.config(text=texte, fg="purple")  # Actualise le record global dans la fenêtre.
-        except Empty:  # Détecte que tous les messages disponibles ont été traités.
-            pass  # Termine cette vérification sans bloquer l’interface.
-        fenetre.after(100, actualiser_record_global)  # Programme la prochaine consultation de la file dans cent millisecondes.
+    def texte(self, valeur: str, taille: int, couleur: str = "#243447") -> tk.Label:  # Crée un texte adaptable et centré.
+        zone = tk.Label(self.contenu, text=valeur, font=("Arial", taille), fg=couleur, bg="#f3f6fa", justify="center", wraplength=480)  # Définit son apparence.
+        zone.pack(fill="x", pady=4)  # Affiche le texte avec une marge réduite.
+        self.textes.append(zone)  # Permet de recalculer sa largeur.
+        return zone  # Renvoie le composant pour les mises à jour.
 
-    Thread(target=ecouter_records, args=(messages_records,), daemon=True).start()  # Démarre l’écoute réseau en arrière-plan sans empêcher la fermeture du programme.
-    actualiser_record_global()  # Lance le traitement des notifications par l’interface.
-    chemin = Path(__file__).resolve().parent / "chien_mystere.jpg"  # Retrouve l’image téléchargée à côté du script.
-    with Image.open(chemin) as image:  # Ouvre l’image et garantit la fermeture du fichier.
-        image.thumbnail((600, 400))  # Limite les dimensions de l’image en conservant ses proportions.
-        photo = ImageTk.PhotoImage(image)  # Convertit l’image pour son affichage dans Tkinter.
+    def defiler(self, evenement) -> None:  # Traduit le mouvement de la molette en défilement.
+        if evenement.delta:  # Ignore un événement sans mouvement.
+            self.surface.yview_scroll(-1 if evenement.delta > 0 else 1, "units")  # Déplace le contenu dans le sens demandé.
 
-    zone_image = tk.Label(fenetre, image=photo)  # Crée la zone contenant la photographie.
-    zone_image.pack(padx=20, pady=10)  # Affiche la photographie dans la fenêtre.
-    zone_global.config(wraplength=480, justify="center")  # Limite la largeur du texte et centre les lignes pour garder les noms visibles.
+    def adapter(self, evenement=None) -> None:  # Adapte les éléments à la taille courante.
+        largeur = max(100, self.surface.winfo_width() - 32)  # Calcule la largeur utile.
+        self.surface.itemconfigure(self.element, width=self.surface.winfo_width())  # Ajuste le conteneur au cadre visible.
+        for zone in self.textes:  # Parcourt les textes de l’interface.
+            zone.config(wraplength=largeur)  # Évite les textes coupés horizontalement.
+        for bouton in self.boutons:  # Parcourt les choix.
+            bouton.config(wraplength=max(60, largeur // 2 - 20))  # Autorise les noms longs sur plusieurs lignes.
+        if self.photo_source is not None:  # Redimensionne uniquement lorsqu’une photo est disponible.
+            image = self.photo_source.copy()  # Préserve la qualité de l’original.
+            image.thumbnail((min(580, largeur), max(120, min(330, self.fenetre.winfo_height() // 3))))  # Adapte la photo à la largeur et à la hauteur.
+            self.photo = ImageTk.PhotoImage(image)  # Conserve une référence à l’image Tkinter.
+            self.image.config(image=self.photo)  # Actualise la photographie affichée.
 
-    indication = tk.Label(fenetre, text="Clique sur une race. Les noms sont ceux de l’API, en anglais.")  # Crée la consigne de réponse.
-    indication.pack(pady=5)  # Affiche la consigne sous la photographie.
+    def charger(self) -> None:  # Prépare une nouvelle question uniquement lorsque la précédente est terminée.
+        if self.phase != "repos":  # Empêche deux chargements simultanés.
+            return  # Ignore un clic prématuré.
+        self.phase = "chargement"  # Verrouille les actions pendant le téléchargement.
+        self.rejouer.config(state="disabled", text="Chargement…")  # Indique que la demande est en cours.
+        self.resultat.config(text="")  # Efface l’ancien résultat.
+        self.etat.config(text="Chargement de la photo…", fg="#16324f")  # Affiche une progression explicite.
+        self.photo_source = None  # Retire l’ancienne photographie du redimensionnement.
+        self.image.config(image="")  # Masque l’image précédente.
+        for bouton in self.boutons:  # Réinitialise les quatre choix.
+            bouton.config(text="…", state="disabled")  # Interdit les réponses pendant le téléchargement.
+        self.surface.yview_moveto(0)  # Revient au début du contenu.
+        Thread(target=self.telecharger, daemon=True).start()  # Effectue les requêtes sans bloquer les clics de la fenêtre.
 
-    cadre_boutons = tk.Frame(fenetre)  # Crée un conteneur pour les quatre boutons.
-    cadre_boutons.pack(padx=20, pady=10)  # Positionne le conteneur dans la fenêtre.
+    def telecharger(self) -> None:  # Travaille hors du fil graphique sans modifier Tkinter.
+        try:  # Essaie de récupérer le record personnel.
+            self.messages.put(("record", lire_record("Michel Jazeron")))  # Transmet le record à la fenêtre.
+        except (requests.exceptions.RequestException, ValueError, KeyError):  # Traite un serveur indisponible ou une réponse invalide.
+            self.messages.put(("record_indisponible", None))  # Autorise le jeu avec une sauvegarde locale.
+        try:  # Essaie de préparer la question et son image.
+            race, propositions = preparer_question()  # Réutilise l’API Dog CEO et les quatre propositions.
+            with Image.open(Path(__file__).resolve().parent / "chien_mystere.jpg") as image:  # Ouvre la photographie téléchargée.
+                photo = image.copy()  # Charge les pixels avant de fermer le fichier.
+            self.messages.put(("question", (race, propositions, photo)))  # Transmet une question complète.
+        except (requests.exceptions.RequestException, OSError, ValueError, KeyError, AttributeError) as erreur:  # Intercepte les erreurs réseau, image et données.
+            self.messages.put(("erreur", f"Chargement impossible : {erreur}"))  # Propose ensuite de réessayer.
 
-    resultat = tk.Label(fenetre, text="", font=("Arial", 13), wraplength=580)  # Prépare une zone de résultat avec retour automatique à la ligne.
-    resultat.pack(padx=20, pady=10)  # Positionne la zone de résultat sous les boutons.
+    def repondre(self, choix: str) -> None:  # Accepte une seule réponse pour la question affichée.
+        if self.phase != "question":  # Refuse les doubles clics et les réponses hors question.
+            return  # Ne compte pas une deuxième réponse.
+        duree = perf_counter() - self.debut  # Mesure uniquement le temps de réflexion.
+        self.phase = "sauvegarde"  # Empêche de rejouer avant la fin de l’enregistrement.
+        score = calculer_score(choix == self.bonne_race, duree)  # Applique le barème existant.
+        for bouton in self.boutons:  # Parcourt les choix visibles.
+            bouton.config(state="disabled")  # Bloque une seconde réponse.
+        correction = "Bonne réponse !" if choix == self.bonne_race else f"Mauvaise réponse : tu as choisi {choix}."  # Explique le résultat.
+        self.resume = f"{correction} Race attendue : {self.bonne_race}.\nTemps : {duree:.2f} s — Score : {score} points."  # Prépare le bilan de la question.
+        self.resultat.config(text=self.resume, fg="#22613c" if score else "#a52a2a")  # Affiche immédiatement la correction.
+        self.etat.config(text="Sauvegarde du résultat…")  # Signale le traitement en cours.
+        Thread(target=self.enregistrer, args=(self.bonne_race, choix, duree, score), daemon=True).start()  # Envoie une copie des valeurs propres à cette question.
 
-    boutons: list[tk.Button] = []  # Prépare la liste des boutons à désactiver après la réponse.
+    def enregistrer(self, race: str, choix: str, duree: float, score: int) -> None:  # Sauvegarde sans accéder aux composants graphiques.
+        confirmations = []  # Sépare les résultats de sauvegarde locale et distante.
+        record = None  # Ne suppose pas que le serveur a répondu.
+        try:  # Tente de conserver le résultat localement.
+            sauvegarder_score(race, choix, duree, score)  # Ajoute une seule ligne CSV.
+            confirmations.append("Score sauvegardé dans scores_dog_guesser.csv.")  # Confirme l’écriture locale.
+        except OSError:  # Traite une écriture impossible.
+            confirmations.append("Échec de la sauvegarde CSV locale.")  # Signale cette erreur indépendamment du serveur.
+        try:  # Tente ensuite l’envoi du score.
+            record = envoyer_score("Michel Jazeron", score)  # Récupère le record confirmé par le serveur.
+            confirmations.append("Record sauvegardé sur le serveur.")  # Confirme l’enregistrement distant.
+        except (requests.exceptions.RequestException, ValueError, KeyError):  # Traite une erreur de communication.
+            confirmations.append("Serveur indisponible : sauvegarde distante non confirmée.")  # N’annonce pas une réussite non confirmée.
+        self.messages.put(("sauvegarde", (record, confirmations)))  # Déclenche la fin du traitement graphique.
 
-    def verifier_reponse(choix: str) -> None:  # Définit la fonction appelée lorsqu’un joueur clique sur une race.
-        duree = perf_counter() - debut_question  # Calcule le temps de réponse en secondes.
-        bonne_reponse = choix == bonne_race  # Vérifie si le choix correspond à la race attendue.
-        score = calculer_score(bonne_reponse, duree)  # Calcule les points selon la justesse et la rapidité.
+    def traiter(self) -> None:  # Centralise les modifications graphiques dans le fil principal.
+        try:  # Traite tous les événements HTTP déjà disponibles.
+            while True:  # Vide la file sans attendre de nouvelles données.
+                type_message, valeur = self.messages.get_nowait()  # Récupère le prochain événement.
+                if type_message == "record":  # Met à jour le record personnel.
+                    self.record = valeur  # Mémorise la valeur confirmée.
+                    self.personnel.config(text=f"Record de Michel Jazeron : {valeur} points")  # Actualise le texte.
+                elif type_message == "record_indisponible":  # Signale une lecture impossible.
+                    self.record = None  # Évite une comparaison avec une valeur périmée.
+                    self.personnel.config(text="Record personnel indisponible — jeu local possible.")  # Informe le joueur.
+                elif type_message == "question":  # Présente une question entièrement téléchargée.
+                    self.bonne_race, propositions, self.photo_source = valeur  # Remplace les données de la question précédente.
+                    self.numero += 1  # Compte cette nouvelle question.
+                    self.adapter()  # Affiche la photo aux dimensions disponibles.
+                    for bouton, race in zip(self.boutons, propositions):  # Associe chaque bouton à sa propre réponse.
+                        bouton.config(text=race, command=lambda choix=race: self.repondre(choix), state="normal")  # Active les réponses.
+                    self.etat.config(text=f"Question {self.numero} — à toi de jouer !")  # Annonce le début de la question.
+                    self.fenetre.update_idletasks()  # Termine la mise en page avant de démarrer le chronomètre.
+                    self.debut = perf_counter()  # Exclut le téléchargement et la préparation du temps mesuré.
+                    self.phase = "question"  # Autorise maintenant la réponse.
+                    self.rejouer.config(text="Réponds pour rejouer", state="disabled")  # Invite à répondre avant de commencer une nouvelle question.
+                elif type_message == "erreur":  # Permet de récupérer après un échec de chargement.
+                    self.etat.config(text=valeur, fg="#a52a2a")  # Affiche la cause.
+                    self.phase = "repos"  # Autorise une nouvelle tentative.
+                    self.rejouer.config(state="normal", text="Réessayer")  # Fournit une action de récupération.
+                elif type_message == "sauvegarde":  # Termine une question après les deux sauvegardes.
+                    record, confirmations = valeur  # Récupère les confirmations obtenues.
+                    if record is not None:  # Utilise uniquement un résultat serveur confirmé.
+                        if self.record is not None and record > self.record:  # Détecte une progression connue.
+                            confirmations.append("Nouveau record personnel, Michel !")  # Annonce le record battu.
+                        self.record = record  # Mémorise le record pour la suite.
+                        self.personnel.config(text=f"Record de Michel Jazeron : {record} points")  # Affiche la valeur sauvegardée.
+                    self.resultat.config(text=self.resume + "\n" + "\n".join(confirmations))  # Affiche le bilan complet.
+                    self.etat.config(text="Question terminée.")  # Indique la fin des traitements.
+                    self.phase = "repos"  # Autorise la question suivante.
+                    self.rejouer.config(state="normal", text="Rejouer")  # Réactive le bouton de nouvelle partie.
+        except Empty:  # Détecte la fin des événements en attente.
+            pass  # Rend la main à l’interface.
+        try:  # Traite séparément les notifications WebSocket.
+            while True:  # Parcourt les notifications reçues.
+                donnees = self.records.get_nowait()  # Lit sans bloquer.
+                if "erreur" in donnees:  # Signale une perte de connexion.
+                    self.global_.config(text=donnees["erreur"], fg="#a52a2a")  # Indique que le record global n’est plus actualisé.
+                else:  # Affiche le record et les éventuels ex æquo.
+                    noms = ", ".join(donnees["joueurs"]) or "Aucun joueur"  # Prépare les détenteurs.
+                    self.global_.config(text=f"Record de tous les temps : {donnees['record']} points\nDétenu par : {noms}", fg="#643a87")  # Actualise le record global.
+        except Empty:  # Détecte une file vide.
+            pass  # Termine la consultation.
+        self.fenetre.after(50, self.traiter)  # Programme le prochain passage sans attente active.
 
-        for bouton in boutons:  # Parcourt les boutons de réponse.
-            bouton.config(state=tk.DISABLED)  # Désactive le bouton pour empêcher une seconde réponse.
 
-        if bonne_reponse:  # Traite une réponse correcte.
-            message = f"Bonne réponse, Michel ! Il s’agit de : {bonne_race}."  # Prépare le message de réussite.
-            couleur = "darkgreen"  # Utilise du vert foncé pour la réussite.
-        else:  # Traite une réponse incorrecte.
-            message = f"Mauvaise réponse, Michel. Tu as choisi {choix}. La bonne réponse est : {bonne_race}."  # Prépare la correction.
-            couleur = "firebrick"  # Utilise une couleur rouge pour l’erreur.
-
-        message += f"\nTemps : {duree:.2f} secondes — Score : {score} points."  # Ajoute le temps et les points obtenus.
-
-        try:  # Tente de conserver chaque résultat dans le fichier CSV local.
-            sauvegarder_score(bonne_race, choix, duree, score)  # Enregistre la réponse, sa durée et ses points.
-        except OSError as erreur:  # Intercepte une erreur d’écriture sans empêcher l’envoi au serveur.
-            message += "\nScore non sauvegardé dans le fichier local."  # Signale l’échec de la sauvegarde CSV.
-            print(f"Michel, erreur de sauvegarde locale : {erreur}")  # Affiche la cause dans le terminal.
-        else:  # Confirme une écriture locale réussie.
-            message += "\nScore sauvegardé dans scores_dog_guesser.csv."  # Indique le fichier contenant le résultat.
-
-        try:  # Tente d’envoyer le score au serveur.
-            nouveau_record = envoyer_score("Michel Jazeron", score)  # Demande au serveur de sauvegarder le record.
-        except (requests.exceptions.RequestException, ValueError, KeyError) as erreur:  # Intercepte une erreur réseau ou une réponse inexploitable.
-            message += "\nRecord non sauvegardé : communication avec le serveur impossible."  # Signale clairement l’échec.
-            print(f"Michel, erreur de communication avec le serveur : {erreur}")  # Affiche le détail dans le terminal.
-        else:  # Actualise l’interface uniquement après la confirmation du serveur.
-            zone_record.config(text=f"Record de Michel Jazeron : {nouveau_record} points")  # Affiche le record renvoyé par le serveur.
-            message += "\nRecord sauvegardé sur le serveur."  # Confirme la sauvegarde côté serveur.
-            if nouveau_record > record_joueur:  # Compare le record obtenu avec celui chargé au début de la question.
-                message += "\nNouveau record personnel, Michel !"  # Annonce un nouveau record.
-
-        resultat.config(text=message, fg=couleur)  # Affiche le résultat complet dans la fenêtre.
-
-    for position, race in enumerate(propositions):  # Parcourt les quatre races pour créer les boutons.
-        bouton = tk.Button(cadre_boutons, text=race, width=24, font=("Arial", 12), command=lambda choix=race: verifier_reponse(choix))  # Associe chaque bouton à sa propre race.
-        bouton.grid(row=position // 2, column=position % 2, padx=5, pady=5)  # Dispose les boutons sur deux lignes et deux colonnes.
-        boutons.append(bouton)  # Conserve le bouton pour pouvoir le désactiver après la réponse.
-
-    signature = tk.Label(fenetre, text="Michel Jazeron — michel.jazeron@gmail.com", fg="gray")  # Crée la signature du joueur.
-    signature.pack(pady=10)  # Affiche la signature en bas de la fenêtre.
-
-    debut_question = perf_counter()  # Démarre le chronomètre une fois les éléments de la fenêtre préparés.
-    fenetre.mainloop()  # Lance la boucle principale qui affiche la fenêtre et traite les clics.
-
-if __name__ == "__main__":  # Lance le jeu uniquement lorsque ce fichier est exécuté directement.
-    print("Michel, préparation de la photo et des quatre propositions…")  # Signale le chargement avant l’ouverture de la fenêtre.
-    try:  # Tente de préparer et d’afficher la question.
-        bonne_race, propositions = preparer_question()  # Télécharge l’image et prépare les quatre choix.
-        afficher_question(bonne_race, propositions)  # Ouvre la fenêtre et attend le clic du joueur.
-    except requests.exceptions.RequestException:  # Intercepte les erreurs réseau et HTTP.
-        print("Michel, impossible de récupérer les données. Vérifie ta connexion et réessaie.")  # Signale un problème de communication.
-    except ValueError as erreur:  # Intercepte les données incorrectes.
-        print(f"Michel, les données reçues sont invalides : {erreur}")  # Affiche le problème rencontré.
-    except OSError as erreur:  # Intercepte notamment les erreurs d’écriture ou de lecture de l’image.
-        print(f"Michel, impossible de traiter l’image : {erreur}")  # Explique le problème concernant l’image.
+if __name__ == "__main__":  # Lance l’application uniquement en exécution directe.
+    jeu = Jeu()  # Prépare la fenêtre et commence le chargement.
+    jeu.fenetre.mainloop()  # Traite les événements jusqu’à la fermeture du jeu.
