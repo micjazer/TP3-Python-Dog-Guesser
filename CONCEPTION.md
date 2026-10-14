@@ -2,12 +2,6 @@
 
 Michel Jazeron — michel.jazeron@gmail.com
 
-## Ma démarche avec l’IA
-
-J’ai utilisé ChatGPT pour m’accompagner dans la conception et la réalisation d’un jeu de reconnaissance de races de chiens. Je lui ai communiqué les contraintes du TP : une application en Python, l’utilisation de l’API Dog CEO, un fichier de dépendances, une documentation de lancement et un dépôt GitHub public.
-
-J’ai demandé un accompagnement progressif, avec du code commenté en français et des captures d’écran à chaque étape importante pour préparer mon rapport. L’IA a proposé des solutions techniques et fourni une grande partie du code. J’ai créé les fichiers sur mon ordinateur, installé les dépendances, lancé les programmes et transmis les résultats des essais. Ce document a également été rédigé avec son aide à partir de nos échanges ; je le relis et le personnalise avant la remise.
-
 ## L’organisation de l’application
 
 L’application utilise Tkinter pour présenter une photo et quatre réponses possibles. Les images et la liste des races proviennent de Dog CEO. Les propositions reprennent les noms anglais de l’API et portent sur la race principale du chien.
